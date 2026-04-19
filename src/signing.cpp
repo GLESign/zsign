@@ -3,6 +3,7 @@
 #include "mach-o.h"
 #include "openssl.h"
 #include "signing.h"
+#include <algorithm>
 #include <openssl/sha.h>
 
 void ZSign::_DERLength(string& strBlob, uint64_t uLength)
@@ -25,7 +26,7 @@ string ZSign::_DER(const jvalue& data)
 	if (data.is_bool()) {
 		strOutput.append(1, 0x01);
 		strOutput.append(1, 1);
-		strOutput.append(1, data.as_bool() ? 1 : 0);
+		strOutput.append(1, data.as_bool() ? (char)0xff : (char)0x00);
 	} else if (data.is_int()) {
 		uint64_t uVal = data.as_int64();
 		strOutput.append(1, 0x02);
@@ -51,24 +52,27 @@ string ZSign::_DER(const jvalue& data)
 		_DERLength(strOutput, strArray.size());
 		strOutput += strArray;
 	} else if (data.is_object()) {
-		string strDict;
 		vector<string> arrKeys;
 		data.get_keys(arrKeys);
+		std::sort(arrKeys.begin(), arrKeys.end());
+
+		string strDict;
 		for (size_t i = 0; i < arrKeys.size(); i++) {
 			string& strKey = arrKeys[i];
 			string strVal = _DER(data[strKey]);
 
+			string strEntry;
+			strEntry.append(1, 0x0c);
+			_DERLength(strEntry, strKey.size());
+			strEntry += strKey;
+			strEntry += strVal;
+
 			strDict.append(1, 0x30);
-			_DERLength(strDict, (2 + strKey.size() + strVal.size()));
-
-			strDict.append(1, 0x0c);
-			_DERLength(strDict, strKey.size());
-			strDict += strKey;
-
-			strDict += strVal;
+			_DERLength(strDict, strEntry.size());
+			strDict += strEntry;
 		}
 
-		strOutput.append(1, 0x31);
+		strOutput.append(1, (char)0xb0);
 		_DERLength(strOutput, strDict.size());
 		strOutput += strDict;
 	} else if (data.is_double()) {
@@ -317,7 +321,20 @@ bool ZSign::SlotBuildDerEntitlements(const string& strEntitlements, string& strO
 	jvalue jvInfo;
 	jvInfo.read_plist(strEntitlements);
 
-	string strRawEntitlementsData = _DER(jvInfo);
+	string strInnerDict = _DER(jvInfo);
+
+	string strVersion;
+	strVersion.append(1, 0x02);
+	strVersion.append(1, 0x01);
+	strVersion.append(1, 0x01);
+
+	string strBody = strVersion + strInnerDict;
+
+	string strRawEntitlementsData;
+	strRawEntitlementsData.append(1, (char)0x70);
+	_DERLength(strRawEntitlementsData, strBody.size());
+	strRawEntitlementsData += strBody;
+
 	uint32_t uMagic = BE((uint32_t)CSMAGIC_EMBEDDED_DER_ENTITLEMENTS);
 	uint32_t uLength = BE((uint32_t)strRawEntitlementsData.size() + 8);
 
